@@ -1411,11 +1411,16 @@ void CppGenerator::GenerateSDKHeader(StreamType& SdkHpp)
 		const bool bHasClassesFile = CurrentPackage.HasClasses();
 		const bool bHasStructsFile = (CurrentPackage.HasStructs() || CurrentPackage.HasEnums());
 
+		std::string PackageName = CurrentPackage.GetName();
+		
+		/* Sanitize package name for filesystem compatibility */
+		FileNameHelper::MakeValidFileName(PackageName);
+
 		if (bIsStruct && bHasStructsFile)
-			SdkHpp << std::format("#include \"SDK/{}_structs.hpp\"\n", CurrentPackage.GetName());
+			SdkHpp << std::format("#include \"SDK/{}_structs.hpp\"\n", PackageName);
 
 		if (!bIsStruct && bHasClassesFile)
-			SdkHpp << std::format("#include \"SDK/{}_classes.hpp\"\n", CurrentPackage.GetName());
+			SdkHpp << std::format("#include \"SDK/{}_classes.hpp\"\n", PackageName);
 	};
 
 	PackageManager::IterateDependencies(ForEachElementCallback);
@@ -1482,6 +1487,9 @@ void CppGenerator::WriteFileHead(StreamType& File, PackageInfoHandle Package, EF
 	if (Type == EFileType::Functions && (Package.HasClasses() || Package.HasParameterStructs()))
 	{
 		std::string PackageName = Package.GetName();
+		
+		/* Sanitize package name for filesystem compatibility */
+		FileNameHelper::MakeValidFileName(PackageName);
 
 		File << "\n";
 
@@ -1507,6 +1515,9 @@ void CppGenerator::WriteFileHead(StreamType& File, PackageInfoHandle Package, EF
 			bAddNewLine = true;
 
 			std::string DependencyName = PackageManager::GetName(PackageIndex);
+			
+			/* Sanitize package name for filesystem compatibility */
+			FileNameHelper::MakeValidFileName(DependencyName);
 
 			if (Requirements.bShouldIncludeStructs)
 				File << std::format("#include \"{}_structs.hpp\"\n", DependencyName);
@@ -1612,7 +1623,11 @@ void CppGenerator::Generate()
 		if (Package.IsEmpty())
 			continue;
 
-		const std::string FileName = Settings::CppGenerator::FilePrefix + Package.GetName();
+		std::string FileName = Settings::CppGenerator::FilePrefix + Package.GetName();
+		
+		/* Sanitize filename for cross-platform compatibility (Windows and Linux) */
+		FileNameHelper::MakeValidFileName(FileName);
+		
 		const std::u8string U8FileName = reinterpret_cast<const std::u8string&>(FileName);
 
 		StreamType ClassesFile;

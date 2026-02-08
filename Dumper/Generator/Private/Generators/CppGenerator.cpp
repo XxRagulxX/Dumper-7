@@ -3418,8 +3418,12 @@ void CppGenerator::GenerateBasicFiles(StreamType& BasicHpp, StreamType& BasicCpp
 		std::sort(Members.begin(), Members.end(), ComparePredefinedMembers);
 	};
 
-	std::string CustomIncludes = R"(#define VC_EXTRALEAN
+	std::string CustomIncludes = R"(#ifndef VC_EXTRALEAN
+#define VC_EXTRALEAN
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 
 #include <string>
 #include <functional>
@@ -3458,6 +3462,11 @@ namespace Offsets
 	constexpr int32 GWorld            = 0x{:08X};
 	constexpr int32 ProcessEvent      = 0x{:08X};
 	constexpr int32 ProcessEventIdx   = 0x{:08X};
+
+	namespace UClass
+	{{
+		constexpr int32 ClassDefaultObject = 0x{:08X};
+	}}
 }}
 )", max(Off::InSDK::ObjArray::GObjects, 0x0),
 	max(Off::InSDK::Name::AppendNameToString, 0x0),
@@ -3465,7 +3474,8 @@ namespace Offsets
 	max(Off::InSDK::NameArray::GNames, 0x0),
 	max(Off::InSDK::World::GWorld, 0x0),
 	max(Off::InSDK::ProcessEvent::PEOffset, 0x0),
-	Off::InSDK::ProcessEvent::PEIndex);
+	Off::InSDK::ProcessEvent::PEIndex,
+	max(Off::UClass::ClassDefaultObject, 0x0));
 
 
 	// Start Namespace 'InSDKUtils'
@@ -3508,6 +3518,11 @@ class UFunction;
 
 class FName;
 )";
+
+	BasicHpp << R"(
+struct InvalidUseOfTDelegate {};
+struct InvalidUseOfTMulticastInlineDelegate {};
+";
 
 	BasicHpp << R"(
 namespace BasicFilesImpleUtils
@@ -3641,7 +3656,7 @@ class UClass* GetStaticBPGeneratedClass(const char* Name, int32& ClassIdx, uint6
 		if (ClassIdx == 0x0) [[unlikely]]
 			return SetClassIndex(BasicFilesImpleUtils::FindClassByFullName(Name), ClassIdx, ClassNameIdx);
 
-		UClass* ClassObj = static_cast<UClass*>(BasicFilesImpleUtils::GetObjectByIndex(ClassIdx));
+		UClass* ClassObj = reinterpret_cast<UClass*>(BasicFilesImpleUtils::GetObjectByIndex(ClassIdx));
 
 		/* Could use cast flags too to save some string comparisons */
 		if (!ClassObj || BasicFilesImpleUtils::GetObjFNameAsUInt64(ClassObj) != ClassNameIdx)
@@ -3654,7 +3669,7 @@ class UClass* GetStaticBPGeneratedClass(const char* Name, int32& ClassIdx, uint6
 		if (ClassIdx == 0x0) [[unlikely]]
 			return SetClassIndex(BasicFilesImpleUtils::FindClassByName(Name), ClassIdx, ClassNameIdx);
 
-		UClass* ClassObj = static_cast<UClass*>(BasicFilesImpleUtils::GetObjectByIndex(ClassIdx));
+		UClass* ClassObj = reinterpret_cast<UClass*>(BasicFilesImpleUtils::GetObjectByIndex(ClassIdx));
 
 		/* Could use cast flags too to save some string comparisons */
 		if (!ClassObj || BasicFilesImpleUtils::GetObjFNameAsUInt64(ClassObj) != ClassNameIdx)
@@ -3674,7 +3689,8 @@ ClassType* GetDefaultObjImpl()
 
 	if (StaticClass)
 	{
-		return reinterpret_cast<ClassType*>(StaticClass->ClassDefaultObject);
+		void* DefaultObj = *reinterpret_cast<void**>(reinterpret_cast<uint8*>(StaticClass) + Offsets::UClass::ClassDefaultObject);
+		return reinterpret_cast<ClassType*>(DefaultObj);
 	}
 
 	return nullptr;
@@ -5795,7 +5811,7 @@ using TActorBasedCycleFixup = CyclicDependencyFixupImpl::TCyclicClassFixup<Under
 void CppGenerator::GenerateUnrealContainers(StreamType& UEContainersHeader)
 {
 	WriteFileHead(UEContainersHeader, nullptr, EFileType::UnrealContainers, 
-		"Container implementations with iterators. See https://github.com/Fischsalat/UnrealContainers", "#include <string>\n#include <stdexcept>\n#include <iostream>\n#include <optional>\n#include \"UtfN.hpp\"");
+		"Container implementations with iterators. See https://github.com/Fischsalat/UnrealContainers", "#include <string>\n#include <stdexcept>\n#include <iostream>\n#include <optional>\n#include <cstring>\n#include <cwchar>\n#include <cstdlib>\n#include \"UtfN.hpp\"");
 
 
 	UEContainersHeader << R"(
@@ -5896,7 +5912,7 @@ namespace UC
 
 			public:
 				ForElementType()
-					: InlineData{ 0x0 }, SecondaryData(nullptr)
+					: InlineData{}, SecondaryData(nullptr)
 				{
 				}
 
@@ -6602,6 +6618,43 @@ namespace UC
 				return *this;
 			}
 
+			inline FSetBitIterator& operator--()
+			{
+				if (Array.Num() <= 0)
+					return *this;
+
+				int32 TargetIndex = CurrentBitIndex - 1;
+				if (TargetIndex < 0)
+				{
+					CurrentBitIndex = 0;
+					WordIndex = 0;
+					Mask = 1u;
+					BaseBitIndex = 0;
+					UnvisitedBitMask = ~0U;
+					return *this;
+				}
+
+				for (int32 Index = TargetIndex; Index >= 0; --Index)
+				{
+					if (Array[Index])
+					{
+						CurrentBitIndex = Index;
+						WordIndex = Index >> NumBitsPerDWORDLogTwo;
+						Mask = 1u << (Index & (NumBitsPerDWORD - 1));
+						BaseBitIndex = Index & ~(NumBitsPerDWORD - 1);
+						UnvisitedBitMask = (~0U) << (Index & (NumBitsPerDWORD - 1));
+						return *this;
+					}
+				}
+
+				CurrentBitIndex = 0;
+				WordIndex = 0;
+				Mask = 1u;
+				BaseBitIndex = 0;
+				UnvisitedBitMask = ~0U;
+				return *this;
+			}
+
 			inline explicit operator bool() const { return CurrentBitIndex < Array.Num(); }
 
 			inline bool operator==(const FSetBitIterator& Rhs) const { return CurrentBitIndex == Rhs.CurrentBitIndex && &Array == &Rhs.Array; }
@@ -6749,7 +6802,7 @@ void CppGenerator::GenerateUnicodeLib(StreamType& UnicodeLib) {
 #pragma warning(disable : 4365) // signed/unsigned mismatch
 #pragma warning(disable : 4710) // 'FunctionName' was not inlined
 #pragma warning(disable : 4711) // 'FunctionName' selected for automatic inline expansion
-#elif (defined(__CLANG__) || defined(__GNUC__))
+#elif (defined(__clang__) || defined(__GNUC__))
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsign-compare"
 #endif
@@ -6767,7 +6820,7 @@ void CppGenerator::GenerateUnicodeLib(StreamType& UnicodeLib) {
 // Restore warnings-levels after STL includes
 #if (defined(_MSC_VER))
 #pragma warning (pop)
-#elif (defined(__CLANG__) || defined(__GNUC__))
+#elif (defined(__clang__) || defined(__GNUC__))
 #pragma GCC diagnostic pop
 #endif // Warnings
 
@@ -6780,7 +6833,7 @@ void CppGenerator::GenerateUnicodeLib(StreamType& UnicodeLib) {
 #pragma warning(disable : 4127) // C4127 conditional expression is constant
 #pragma warning(disable : 5045) // C5045 Compiler will insert Spectre mitigation for memory load if /Qspectre switch specified
 #pragma warning(disable : 5246) // C5246 'ArrayVariable' the initialization of a subobject should be wrapped in braces
-#elif (defined(__CLANG__) || defined(__GNUC__))
+#elif (defined(__clang__) || defined(__GNUC__))
 #endif // Warnings
 
 #ifdef __cpp_constexpr
@@ -7044,7 +7097,7 @@ namespace UtfN
 					typename = decltype(std::begin(std::declval<container_type>())), // Has begin
 					typename = decltype(std::end(std::declval<container_type>())),   // Has end
 					typename iterator_deref_type = decltype(*std::end(std::declval<container_type>())), // Iterator can be dereferenced
-					typename = std::enable_if<sizeof(std::decay<iterator_deref_type>::type) == utf_char_type::GetCodepointSize()>::type // Return-value of derferenced iterator has the same size as one codepoint
+					typename = std::enable_if<sizeof(typename std::decay<iterator_deref_type>::type) == utf_char_type::GetCodepointSize()>::type // Return-value of derferenced iterator has the same size as one codepoint
 				>
 				explicit UTF_CONSTEXPR utf_char_iterator_base(container_type& Container)
 					: CurrentIterator(std::begin(Container)), NextCharStartIterator(std::begin(Container)), EndIterator(std::end(Container))
@@ -7503,12 +7556,12 @@ namespace UtfN
 	template<
 		typename codepoint_iterator_type,
 		typename iterator_deref_type = decltype(*std::declval<codepoint_iterator_type>()), // Iterator can be dereferenced
-		typename = typename std::enable_if<sizeof(std::decay<iterator_deref_type>::type) == utf_char8::GetCodepointSize()>::type // Return-value of derferenced iterator has the same size as one codepoint
+		typename = typename std::enable_if<sizeof(typename std::decay<iterator_deref_type>::type) == utf_char8::GetCodepointSize()>::type // Return-value of derferenced iterator has the same size as one codepoint
 	>
 	class utf8_iterator : public UtfImpl::Iterator::utf_char_iterator_base<utf8_iterator<codepoint_iterator_type>, codepoint_iterator_type, utf_char8>
 	{
 	private:
-		typedef typename utf8_iterator<codepoint_iterator_type> own_type;
+		using own_type = utf8_iterator<codepoint_iterator_type>;
 
 		friend UtfImpl::Iterator::utf_char_iterator_base_child_acessor<own_type>;
 
@@ -7548,12 +7601,12 @@ namespace UtfN
 	template<
 		typename codepoint_iterator_type,
 		typename iterator_deref_type = decltype(*std::declval<codepoint_iterator_type>()), // Iterator can be dereferenced
-		typename = typename std::enable_if<sizeof(std::decay<iterator_deref_type>::type) == utf_char16::GetCodepointSize()>::type // Return-value of derferenced iterator has the same size as one codepoint
+		typename = typename std::enable_if<sizeof(typename std::decay<iterator_deref_type>::type) == utf_char16::GetCodepointSize()>::type // Return-value of derferenced iterator has the same size as one codepoint
 	>
 	class utf16_iterator : public UtfImpl::Iterator::utf_char_iterator_base<utf16_iterator<codepoint_iterator_type>, codepoint_iterator_type, utf_char16>
 	{
 	private:
-		typedef typename utf16_iterator<codepoint_iterator_type> own_type;
+		using own_type = utf16_iterator<codepoint_iterator_type>;
 
 		friend UtfImpl::Iterator::utf_char_iterator_base_child_acessor<own_type>;
 
@@ -7604,12 +7657,12 @@ namespace UtfN
 	template<
 		typename codepoint_iterator_type,
 		typename iterator_deref_type = decltype(*std::declval<codepoint_iterator_type>()), // Iterator can be dereferenced
-		typename = typename std::enable_if<sizeof(std::decay<iterator_deref_type>::type) == utf_char32::GetCodepointSize()>::type // Return-value of derferenced iterator has the same size as one codepoint
+		typename = typename std::enable_if<sizeof(typename std::decay<iterator_deref_type>::type) == utf_char32::GetCodepointSize()>::type // Return-value of derferenced iterator has the same size as one codepoint
 	>
 	class utf32_iterator : public UtfImpl::Iterator::utf_char_iterator_base<utf32_iterator<codepoint_iterator_type>, codepoint_iterator_type, utf_char32>
 	{
 	private:
-		typedef typename utf32_iterator<codepoint_iterator_type> own_type;
+		using own_type = utf32_iterator<codepoint_iterator_type>;
 
 		friend UtfImpl::Iterator::utf_char_iterator_base_child_acessor<own_type>;
 
@@ -8348,7 +8401,7 @@ namespace UtfN
 // Restore all warnings suppressed for the UTF-N implementation
 #if (defined(_MSC_VER))
 #pragma warning (pop)
-#elif (defined(__CLANG__) || defined(__GNUC__))
+#elif (defined(__clang__) || defined(__GNUC__))
 #pragma GCC diagnostic pop
 #endif // Warnings)";
 

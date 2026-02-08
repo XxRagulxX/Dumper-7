@@ -2,6 +2,11 @@
 
 #include <string>
 #include <stdexcept>
+#include <iostream>
+#include <optional>
+#include <cstring>
+#include <cwchar>
+#include <cstdlib>
 
 #include "Enums.h"
 #include "Encoding/UtfN.hpp"
@@ -94,7 +99,7 @@ namespace UC
 
 			public:
 				ForElementType()
-					: InlineData{ 0x0 }, SecondaryData(nullptr)
+					: InlineData{}, SecondaryData(nullptr)
 				{
 				}
 
@@ -753,6 +758,43 @@ namespace UC
 
 				FindFirstSetBit();
 
+				return *this;
+			}
+
+			inline FSetBitIterator& operator--()
+			{
+				if (Array.Num() <= 0)
+					return *this;
+
+				int32 TargetIndex = CurrentBitIndex - 1;
+				if (TargetIndex < 0)
+				{
+					CurrentBitIndex = 0;
+					WordIndex = 0;
+					Mask = 1u;
+					BaseBitIndex = 0;
+					UnvisitedBitMask = ~0U;
+					return *this;
+				}
+
+				for (int32 Index = TargetIndex; Index >= 0; --Index)
+				{
+					if (Array[Index])
+					{
+						CurrentBitIndex = Index;
+						WordIndex = Index >> NumBitsPerDWORDLogTwo;
+						Mask = 1u << (Index & (NumBitsPerDWORD - 1));
+						BaseBitIndex = Index & ~(NumBitsPerDWORD - 1);
+						UnvisitedBitMask = (~0U) << (Index & (NumBitsPerDWORD - 1));
+						return *this;
+					}
+				}
+
+				CurrentBitIndex = 0;
+				WordIndex = 0;
+				Mask = 1u;
+				BaseBitIndex = 0;
+				UnvisitedBitMask = ~0U;
 				return *this;
 			}
 
